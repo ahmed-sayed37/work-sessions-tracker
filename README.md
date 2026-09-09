@@ -46,7 +46,11 @@ Keys: `workSessions.v1.tasks` (primary), `workSessions.v1.backup`, `workSessions
 
 ## Deploy
 
-Pushes to `master` build and publish via GitHub Actions (Pages, `base: /work-sessions-tracker/`).
+Vite `base` is `/work-sessions-tracker/` for GitHub Pages.
+
+**Current live deploy:** `gh-pages` branch (built `dist/` + `.nojekyll`). Pages source: branch `gh-pages` / `/`.
+
+**Actions workflow:** `.github/workflows/deploy-pages.yml` is ready (Node 22 → `npm ci` → build → `deploy-pages`). Pushing that path requires a GitHub token with the `workflow` scope; until then, rebuild and force-push `gh-pages` after changes on `master`.
 
 ## Tech
 
