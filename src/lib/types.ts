@@ -37,6 +37,8 @@ export interface AppState {
 }
 
 export const STORAGE_KEY = 'workSessions.v1.tasks';
+export const BACKUP_KEY = 'workSessions.v1.backup';
+export const CORRUPT_KEY = 'workSessions.v1.corrupt';
 
 export function createEmptySession(): WorkSession {
   return { id: crypto.randomUUID(), start: '', end: '' };

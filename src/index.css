@@ -435,3 +435,10 @@ button:disabled {
   font-size: 0.9rem;
   min-width: 120px;
 }
+
+.persist-notice {
+  margin: 4px 0 24px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}

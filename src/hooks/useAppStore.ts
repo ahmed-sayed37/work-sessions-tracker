@@ -6,7 +6,15 @@ import {
   createDefaultTimer,
 } from '../lib/types';
 import type { AppState, TaskData, WorkSession, Problem } from '../lib/types';
-import { loadState, saveState, exportStateJson, importStateJson } from '../lib/storage';
+import {
+  loadState,
+  saveState,
+  flushState,
+  exportStateJson,
+  importStateJson,
+  localStorageHasValidState,
+  tryRestoreFromIdb,
+} from '../lib/storage';
 import { sumSessionHours, toDatetimeLocalValue } from '../lib/time';
 
 const DEBOUNCE_MS = 300;
@@ -23,20 +31,54 @@ export function useAppStore() {
     window.setTimeout(() => setToast(null), 2200);
   }, []);
 
+  // If localStorage was empty/corrupt, restore from IndexedDB once on mount.
+  useEffect(() => {
+    if (localStorageHasValidState()) return;
+    let cancelled = false;
+    void (async () => {
+      const restored = await tryRestoreFromIdb();
+      if (!cancelled && restored) {
+        setState(restored);
+        showToast('Restored from IndexedDB backup');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showToast]);
+
+  // Debounced auto-save (~300ms)
   useEffect(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      saveState(stateRef.current);
+      const ok = saveState(stateRef.current);
+      if (!ok) showToast('Storage full — export your data');
     }, DEBOUNCE_MS);
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [state]);
+  }, [state, showToast]);
 
+  // Flush on pagehide, visibility hidden, and beforeunload
   useEffect(() => {
-    const flush = () => saveState(stateRef.current);
+    const flush = () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      saveState(stateRef.current);
+    };
+    const onVisibility = () => {
+      if (document.hidden) flush();
+    };
+    window.addEventListener('pagehide', flush);
     window.addEventListener('beforeunload', flush);
-    return () => window.removeEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, []);
 
   const activeTask = useMemo(
@@ -184,12 +226,15 @@ export function useAppStore() {
     if (t.timer.status === 'running' && t.timer.segmentStartedAt) {
       accumulated += Date.now() - new Date(t.timer.segmentStartedAt).getTime();
     }
+    accumulated = Math.max(0, accumulated);
+
+    // Start stays timer.startedAt; end = start + accumulatedMs so pauses are excluded from billed hours.
     const startIso = t.timer.startedAt || new Date(Date.now() - accumulated).toISOString();
-    const endIso = new Date().toISOString();
+    const endIso = new Date(new Date(startIso).getTime() + accumulated).toISOString();
 
     if (confirmAppend) {
       const ok = window.confirm(
-        `Stop timer and append a work session?\n\nStart: ${new Date(startIso).toLocaleString()}\nEnd: ${new Date(endIso).toLocaleString()}`,
+        `Stop timer and append a work session?\n\nStart: ${new Date(startIso).toLocaleString()}\nEnd: ${new Date(endIso).toLocaleString()}\nDuration: ${(accumulated / 3_600_000).toFixed(2)} h (pauses excluded)`,
       );
       if (!ok) return;
     }
@@ -220,7 +265,7 @@ export function useAppStore() {
     showToast('Session appended from timer');
   }, [activeTask.id, updateTask, showToast]);
 
-  const saveExplicit = useCallback(() => {
+  const saveExplicit = useCallback(async () => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const next: AppState = {
       ...stateRef.current,
@@ -237,21 +282,32 @@ export function useAppStore() {
       ),
     };
     setState(next);
-    saveState(next);
-    showToast('Saved');
+    stateRef.current = next;
+    const ok = await flushState(next);
+    if (!ok) showToast('Storage full — export your data');
+    else showToast('Saved');
   }, [showToast]);
 
-  const resetCurrentTask = useCallback(() => {
+  const resetCurrentTask = useCallback(async () => {
     const name = activeTask.name;
     const ok = window.confirm(
-      `Reset "${name}"?\n\nThis clears sessions, problems, comments, timer, and submitted hours for this task only.`,
+      `Reset "${name}"?\n\nThis CANNOT be undone. Sessions, problems, comments, timer, and submitted hours for this task will be permanently cleared. Other tasks are untouched.\n\nTip: Export a JSON backup first if you might need this data later.`,
     );
     if (!ok) return;
-    updateTask(activeTask.id, () => ({
-      ...createDefaultTask(activeTask.id, name),
-    }));
-    showToast('Task reset');
-  }, [activeTask.id, activeTask.name, updateTask, showToast]);
+    // Only replace this one task in state — never clear storage keys globally.
+    const next: AppState = {
+      ...stateRef.current,
+      tasks: stateRef.current.tasks.map((t) =>
+        t.id === activeTask.id ? createDefaultTask(activeTask.id, name) : t,
+      ),
+    };
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    setState(next);
+    stateRef.current = next;
+    const saved = await flushState(next);
+    if (!saved) showToast('Storage full — export your data');
+    else showToast('Task reset');
+  }, [activeTask.id, activeTask.name, showToast]);
 
   const refreshFromStorage = useCallback(() => {
     setState(loadState());
@@ -273,14 +329,19 @@ export function useAppStore() {
   const importJson = useCallback((file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
-      try {
-        const next = importStateJson(String(reader.result));
-        setState(next);
-        saveState(next);
-        showToast('Imported backup');
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : 'Import failed');
-      }
+      void (async () => {
+        try {
+          const next = importStateJson(String(reader.result));
+          if (saveTimer.current) clearTimeout(saveTimer.current);
+          setState(next);
+          stateRef.current = next;
+          const ok = await flushState(next);
+          if (!ok) showToast('Imported but storage full — export your data');
+          else showToast('Imported backup');
+        } catch (e) {
+          showToast(e instanceof Error ? e.message : 'Import failed');
+        }
+      })();
     };
     reader.readAsText(file);
   }, [showToast]);

@@ -373,11 +373,14 @@ export default function App() {
         </div>
       </div>
 
-      {/* Effective total hint for debugging clarity */}
+      {/* Effective total + persistence notice */}
       <p className="page-sub" style={{ marginTop: 8, fontSize: '0.8rem' }}>
         Effective total for {activeTask.name}: {formatHours(effectiveTotal)} hours
-        {activeTask.totalHoursOverride !== null ? ' (override)' : ' (auto)'} · Data auto-saves to
-        localStorage.
+        {activeTask.totalHoursOverride !== null ? ' (override)' : ' (auto)'}.
+      </p>
+      <p className="persist-notice">
+        Data stays in this browser until you Reset a task or clear site data. Use Export for a
+        portable backup. Auto-saves to localStorage + IndexedDB.
       </p>
 
       {toast && <div className="toast" role="status">{toast}</div>}
